@@ -1,0 +1,5 @@
+isin;naam;type;valuta;bron;symbool;ter;aantal_posities;concentratie;koers_winst;dividendrendement;schuld_eigen_vermogen;couponrente;couponfrequentie;vervaldatum;koers;ytm;rating;duration
+XX0000001018;Voorbeeld Aandeel;aandeel;EUR;csv;;;;;18,5;2,1;0,8;;;;;;;
+XX0000001026;Voorbeeld ETF;etf;EUR;csv;;0,20;1500;5;;1,6;;;;;;;;
+XX0000001034;Voorbeeld Staatsobligatie;staatsobligatie;EUR;csv;;;;;;;;2,5;1;2031-07-15;99,2;;AAA;
+XX0000001042;Voorbeeld Bedrijfsobligatie;bedrijfsobligatie;EUR;csv;;;;;;;;4,5;1;2033-09-01;98,0;;BBB;

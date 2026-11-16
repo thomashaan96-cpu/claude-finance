@@ -1,0 +1,77 @@
+# Aannames en gewichten voor het beleggingsdashboard.
+# Percentages zijn in procenten (2.5 = 2,5%), tenzij anders vermeld.
+
+algemeen:
+  startbedrag: 10000            # euro, basis voor de scenario's
+  horizons: [1, 3, 5, 10]       # jaren
+  risicovrije_rente: 2.5        # % per jaar, instelbaar in de app
+  database: storage/dashboard.db
+  verversen_na_dagen: 7         # automatische verversing: hooguit wekelijks
+  historie_jaren: 11            # op te halen koershistorie
+
+validatie:
+  max_leeftijd_koers_dagen: 10  # ouder = waarschuwing "verouderde koers"
+  schuld_ev_hoog: 2.0           # schuld/eigen vermogen boven deze waarde = signaal
+  concentratie_hoog: 10.0       # grootste positie in % boven deze waarde = signaal
+  spreiding_min_posities: 50    # ETF met minder posities = signaal beperkte spreiding
+
+scenario:
+  renteschok: 1.0               # procentpunt rentestijging/-daling voor obligaties
+  rentevolatiliteit: 1.0        # procentpunt per jaar; volatiliteit obligatie = duration x deze waarde
+                                # (alleen gebruikt als koershistorie ontbreekt)
+  # Extra jaarlijks verlies (%) in het slechte scenario voor bedrijfsobligaties, per ratingklasse.
+  kredietverlies_slecht:
+    AAA: 0.0
+    AA: 0.1
+    A: 0.2
+    BBB: 0.5
+    BB: 2.0
+    B: 5.0
+    CCC: 10.0
+    onbekend: 2.0
+
+filters:
+  min_koersen_historie:         # minimale datakwaliteit: aantal koersen in de historie
+    aandeel: 60
+    etf: 60
+    staatsobligatie: 1
+    bedrijfsobligatie: 1
+  min_historie_jaren:           # minimale datakwaliteit: lengte van de koershistorie
+    aandeel: 3                  # (korte historie geeft onbetrouwbare scenario's)
+    etf: 3
+    staatsobligatie: 0
+    bedrijfsobligatie: 0
+  liquiditeit_venster_dagen: 30
+  min_koersen_recent:           # minimale liquiditeit: koersen binnen het venster
+    aandeel: 10
+    etf: 10
+    staatsobligatie: 1
+    bedrijfsobligatie: 1
+  min_rating_bedrijfsobligatie: BBB-
+
+# Gewichten per risicoprofiel. Elke kolom telt op tot 1.
+gewichten:
+  defensief:
+    verwacht_rendement: 0.15
+    verlies_slecht: 0.25
+    volatiliteit: 0.20
+    kosten: 0.10
+    kredietrating: 0.15
+    liquiditeit: 0.10
+    actualiteit: 0.05
+  neutraal:
+    verwacht_rendement: 0.30
+    verlies_slecht: 0.20
+    volatiliteit: 0.15
+    kosten: 0.10
+    kredietrating: 0.10
+    liquiditeit: 0.10
+    actualiteit: 0.05
+  offensief:
+    verwacht_rendement: 0.50
+    verlies_slecht: 0.10
+    volatiliteit: 0.10
+    kosten: 0.10
+    kredietrating: 0.05
+    liquiditeit: 0.10
+    actualiteit: 0.05
