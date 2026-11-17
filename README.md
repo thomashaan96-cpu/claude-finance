@@ -20,7 +20,7 @@ streamlit run app.py
 
 Tests draaien: `python -m pytest`
 
-Zonder eigen data kun je op het tabblad **Instrumenten** onder *Demodata laden* elf fictieve
+Zonder eigen data kun je op het tabblad **Instrumenten** onder *Demodata laden* twaalf fictieve
 instrumenten toevoegen.
 
 ## Gebruik
@@ -50,7 +50,15 @@ Alle bronnen implementeren de interface `PrijsBron` (`koers`, `historie`, `rente
 | `eodhd` | Aandelen en ETF's | omgevingsvariabele `EODHD_API_KEY` |
 | `twelvedata` | Aandelen en ETF's | omgevingsvariabele `TWELVEDATA_API_KEY` |
 | `eodhd_eubond` | Obligaties (EODHD EUBOND) | `EODHD_API_KEY` |
+| `eulerpool` | Obligaties (Eulerpool); adressen instelbaar in `config.yaml` | `EULERPOOL_API_KEY` |
 | `csv` / `handmatig` | Alles, via import | geen |
+
+Daarnaast:
+
+- **Wisselkoersen:** ECB-referentiekoersen (gratis), via de knop *Wisselkoersen ophalen (ECB)* of als CSV
+  (`datum, valuta, koers` = eenheden valuta per euro; voorbeeld `voorbeelden/wisselkoersen.csv`).
+- **Kengetallen:** koers/winst, dividendrendement, schuld/eigen vermogen, TER, aantal posities en grootste
+  positie via EODHD fundamentals (tabblad Instrumenten). Alleen lege velden worden aangevuld.
 
 Koersen worden lokaal in SQLite bewaard (`storage/dashboard.db`). Ze worden alleen opgehaald via de
 knop **Koersen verversen** of automatisch wanneer de laatste poging ouder is dan 7 dagen
@@ -96,10 +104,13 @@ de mediaan van de eigen categorie: `invloed = 100 × gewicht × (genormaliseerd 
 
 ## Beperkingen
 
-- Geen valutaomrekening: rendementen gelden in de valuta van het instrument.
+- Aandelen en ETF's in vreemde valuta worden omgerekend naar euro (valutarisico zit in rendement, risico en
+  scenario's). Obligaties in vreemde valuta worden niet omgerekend; dat wordt gemeld.
+- De API-koppelingen (EODHD, Twelve Data, Eulerpool, ECB) zijn getest met voorbeeldantwoorden, niet live.
+  Controleer bij Eulerpool de adressen in `config.yaml` tegen de documentatie van je abonnement.
 - Obligaties worden gerekend zonder opgelopen rente; de liquiditeitsmaat is het aantal koersen, niet de verhandelde omzet.
 - Volatiliteit van obligaties zonder koershistorie is een schatting (duration × rentevolatiliteit).
-- Kengetallen (koers/winst, TER, rating) worden handmatig ingevoerd en niet automatisch opgehaald.
+- Kredietratings van obligaties worden handmatig ingevoerd.
 
 ## Structuur
 

@@ -41,6 +41,8 @@ DEMO = [
      dict(couponrente=3.75, vervaldatum=date(2030, 3, 1), koers=100.8, rating="A-")),
     ("Demo Bedrijfsobligatie BBB", "bedrijfsobligatie", 0, 0, 0,
      dict(couponrente=4.5, vervaldatum=date(2033, 9, 1), koers=98.0, rating="BBB")),
+    ("Demo Aandeel VS (USD)", "aandeel", 0.09, 0.22, 10.5, dict(valuta="USD", koers_winst=24, dividendrendement=1.1,
+                                                                schuld_eigen_vermogen=0.9)),
     ("Demo Bedrijfsobligatie High Yield", "bedrijfsobligatie", 0, 0, 0,
      dict(couponrente=7.5, vervaldatum=date(2029, 6, 1), koers=96.0, rating="BB-")),
 ]
@@ -50,7 +52,8 @@ def laad_demo(opslag: Opslag, vandaag: date | None = None) -> int:
     vandaag = vandaag or date.today()
     rng = np.random.default_rng(42)
     for nr, (naam, soort, mu, sigma, jaren, extra) in enumerate(DEMO, start=1):
-        instrument = Instrument(isin=_isin(nr), naam=naam, type=soort, valuta="EUR", bron="csv", **extra)
+        extra = {"valuta": "EUR", **extra}
+        instrument = Instrument(isin=_isin(nr), naam=naam, type=soort, bron="csv", **extra)
         opslag.bewaar_instrument(instrument)
         if jaren:
             dagen = pd.bdate_range(end=vandaag, periods=int(jaren * 252))
@@ -61,4 +64,8 @@ def laad_demo(opslag: Opslag, vandaag: date | None = None) -> int:
         else:  # obligatie: alleen de actuele koers
             df = pd.DataFrame({"datum": [vandaag - timedelta(days=1)], "koers": [extra["koers"]]})
         opslag.bewaar_koersen(instrument.isin, df, "demo")
+    # Fictieve EUR/USD-koers (dollars per euro) rond 1,10
+    dagen = pd.bdate_range(end=vandaag, periods=int(10.5 * 252))
+    fx = 1.10 * np.exp(np.cumsum(rng.normal(0, 0.08 / np.sqrt(252), len(dagen))))
+    opslag.bewaar_wisselkoersen("USD", pd.DataFrame({"datum": dagen.date, "koers": fx.round(4)}), "demo")
     return len(DEMO)

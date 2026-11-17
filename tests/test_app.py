@@ -29,6 +29,6 @@ def test_app_start_en_maakt_rangschikking(app):
     knop.click().run()
     assert not app.exception
     waarom = [e.label for e in app.expander if e.label.startswith("Waarom?")]
-    assert len(waarom) == 11                                   # elk instrument heeft een motivatie
+    assert len(waarom) == 12                                   # elk instrument heeft een motivatie
     assert sum("niet gerangschikt" in w for w in waarom) == 2  # high yield (rating) en jong aandeel (historie)
     assert waarom[0].startswith("Waarom? · #1 ")

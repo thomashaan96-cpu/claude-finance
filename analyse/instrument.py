@@ -8,7 +8,7 @@ from typing import Optional
 
 import pandas as pd
 
-from analyse import obligaties, rendement, risico, scenarios
+from analyse import obligaties, rendement, risico, scenarios, valuta
 from data.modellen import Instrument, InstrumentType, rating_klasse
 from data.validatie import WAARSCHUWING, Melding, valideer
 
@@ -24,6 +24,7 @@ class InstrumentAnalyse:
     laatste_koers: Optional[float] = None
     laatste_datum: Optional[date] = None
     koersbron: Optional[str] = None
+    rekenvaluta: str = "EUR"              # valuta waarin rendement en risico zijn berekend
     leeftijd_dagen: Optional[int] = None
     aantal_koersen: int = 0
     koersen_recent: int = 0
@@ -48,7 +49,13 @@ class InstrumentAnalyse:
 
 
 def analyseer(instrument: Instrument, historie: pd.DataFrame, config: dict,
-              peildatum: Optional[date] = None, risicovrije_rente: Optional[float] = None) -> InstrumentAnalyse:
+              peildatum: Optional[date] = None, risicovrije_rente: Optional[float] = None,
+              wisselkoersen: Optional[pd.DataFrame] = None) -> InstrumentAnalyse:
+    """Analyseert één instrument.
+
+    `wisselkoersen` (datum, koers = valuta per euro) wordt gebruikt om koersen in vreemde valuta
+    naar euro om te rekenen, zodat valutarisico in rendement, risico en scenario's zit.
+    """
     peildatum = peildatum or date.today()
     alg, val, scen = config["algemeen"], config["validatie"], config["scenario"]
     rf = alg["risicovrije_rente"] if risicovrije_rente is None else risicovrije_rente
@@ -61,6 +68,28 @@ def analyseer(instrument: Instrument, historie: pd.DataFrame, config: dict,
     a = InstrumentAnalyse(instrument=instrument, peildatum=peildatum)
     a.meldingen = valideer(instrument, historie, peildatum, config)
     geldig = historie[historie["koers"] > 0].reset_index(drop=True)
+
+    # --- valuta ---
+    a.rekenvaluta = instrument.valuta
+    if instrument.valuta != "EUR":
+        if instrument.type.is_obligatie:
+            a.meldingen.append(Melding(WAARSCHUWING, f"Obligatie in {instrument.valuta}: yield en scenario's zijn "
+                                                     "in die valuta; valutarisico is niet meegerekend."))
+        elif not alg.get("omrekenen_naar_euro", True):
+            a.meldingen.append(Melding(WAARSCHUWING, f"Rendement in {instrument.valuta}; omrekening naar euro staat "
+                                                     "uit in config.yaml. Valutarisico niet meegerekend."))
+        elif wisselkoersen is None or wisselkoersen.empty:
+            a.meldingen.append(Melding(WAARSCHUWING, f"Geen wisselkoersen voor {instrument.valuta}: rendement en "
+                                                     "risico in die valuta, valutarisico niet meegerekend. "
+                                                     "Haal wisselkoersen op in de zijbalk."))
+        else:
+            omgerekend, dekking = valuta.naar_euro(geldig, wisselkoersen)
+            if dekking < 0.95:
+                a.meldingen.append(Melding(WAARSCHUWING, f"Wisselkoersen dekken {dekking:.0%} van de koershistorie; "
+                                                         "koersdagen zonder wisselkoers zijn weggelaten."
+                                                         .replace(".", ",", 0)))
+            if not omgerekend.empty:
+                geldig, a.rekenvaluta = omgerekend, "EUR"
 
     # --- koers en liquiditeit ---
     a.aantal_koersen = len(geldig)

@@ -8,6 +8,14 @@ algemeen:
   database: storage/dashboard.db
   verversen_na_dagen: 7         # automatische verversing: hooguit wekelijks
   historie_jaren: 11            # op te halen koershistorie
+  omrekenen_naar_euro: true     # koersen in vreemde valuta omrekenen met ECB-wisselkoersen
+
+# Eulerpool (bedrijfsobligaties). Controleer de adressen in je Eulerpool-account;
+# {isin}, {start} en {eind} worden ingevuld. De sleutel komt uit EULERPOOL_API_KEY.
+eulerpool:
+  basis_url: https://api.eulerpool.com
+  historie_pad: /api/1/bonds/{isin}/prices?from={start}&to={eind}
+  sleutel_parameter: token
 
 validatie:
   max_leeftijd_koers_dagen: 10  # ouder = waarschuwing "verouderde koers"

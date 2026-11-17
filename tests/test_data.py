@@ -140,4 +140,5 @@ def test_ververs_via_bron_en_cache(config):
 
 def test_demo_laden():
     opslag = Opslag()
-    assert laad_demo(opslag, PEILDATUM) == len(opslag.instrumenten()) == 11
+    assert laad_demo(opslag, PEILDATUM) == len(opslag.instrumenten()) == 12
+    assert opslag.valuta_met_wisselkoersen() == ["USD"]

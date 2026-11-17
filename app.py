@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from analyse.instrument import InstrumentAnalyse, analyseer
 from analyse.scenarios import LABEL
 from data import demo, dienst
-from data.bronnen import BronFout, lees_koersen_csv
+from data.bronnen import BronFout, lees_koersen_csv, lees_wisselkoersen_csv
 from data.invoer import lees_instrumenten_csv
 from data.modellen import BRONNEN, RATINGS, Instrument, InstrumentType
 from data.validatie import FOUT
@@ -66,7 +66,9 @@ def serie_kleur() -> str:
 
 def analyseer_alles(rf: float) -> list[InstrumentAnalyse]:
     opslag, config = _opslag(), _config()
-    return [analyseer(i, opslag.historie(i.isin), config, date.today(), rf) for i in opslag.instrumenten()]
+    fx = {v: opslag.wisselkoersen(v) for v in opslag.valuta_met_wisselkoersen()}
+    return [analyseer(i, opslag.historie(i.isin), config, date.today(), rf, fx.get(i.valuta))
+            for i in opslag.instrumenten()]
 
 
 def bewaar(instrument: Instrument) -> None:
@@ -105,8 +107,20 @@ def zijbalk() -> float:
             with st.spinner("Rentes ophalen…"):
                 st.session_state["rente_resultaat"] = dienst.ververs_rentes(opslag)
             st.rerun()
+        if st.button("Wisselkoersen ophalen (ECB)", width="stretch",
+                     help="Voor aandelen en ETF's in vreemde valuta; nodig om rendement in euro te berekenen."):
+            with st.spinner("Wisselkoersen ophalen…"):
+                uit = dienst.ververs_wisselkoersen(opslag, config)
+                st.session_state["fx_resultaat"] = uit or {"–": "geen instrumenten in vreemde valuta"}
+            wis_rangschikking()
+            st.rerun()
         if "rente_resultaat" in st.session_state:
             st.caption(f"Rentecurve: {st.session_state['rente_resultaat']}")
+        for v, status in st.session_state.get("fx_resultaat", {}).items():
+            st.caption(f"Wisselkoers {v}: {status}")
+        aanwezig = opslag.valuta_met_wisselkoersen()
+        if aanwezig:
+            st.caption("Wisselkoersen aanwezig voor: " + ", ".join(aanwezig) + ".")
         resultaat = st.session_state.get("ververs_resultaat")
         if resultaat is not None:
             if not resultaat:
@@ -124,9 +138,16 @@ def wekelijkse_verversing() -> None:
     if st.session_state.get("wekelijks_gecontroleerd"):
         return
     st.session_state["wekelijks_gecontroleerd"] = True
-    resultaat = dienst.ververs_alles(_opslag(), _config(), alleen_verouderd=True)
+    opslag, config = _opslag(), _config()
+    resultaat = dienst.ververs_alles(opslag, config, alleen_verouderd=True)
     if resultaat:
         st.session_state["ververs_resultaat"] = resultaat
+    termijn = config["algemeen"]["verversen_na_dagen"]
+    verouderd = [v for v in dienst.benodigde_valuta(opslag)
+                 if v not in opslag.valuta_met_wisselkoersen() or opslag.moet_verversen(f"valuta:{v}", termijn)]
+    # Alleen automatisch ophalen als er al eens wisselkoersen via de ECB zijn opgehaald (geen verrassende netwerkaanroepen)
+    if verouderd and any(opslag.laatste_verversing(f"valuta:{v}") for v in dienst.benodigde_valuta(opslag)):
+        st.session_state["fx_resultaat"] = dienst.ververs_wisselkoersen(opslag, config, valuta=verouderd)
 
 
 # ---------------------------------------------------------------- tab Instrumenten
@@ -142,13 +163,14 @@ def tab_instrumenten(analyses: list[InstrumentAnalyse]) -> None:
             "Type": a.instrument.type.label,
             "Valuta": a.instrument.valuta,
             "Bron": a.instrument.bron,
-            "Laatste koers": a.laatste_koers,
+            "Laatste koers": None if a.laatste_koers is None else round(a.laatste_koers, 2),
+            "Koers in": "% nominaal" if a.instrument.type.is_obligatie else a.rekenvaluta,
             "Koersdatum": a.laatste_datum,
             "Aantal koersen": a.aantal_koersen,
             "Status": ("Fout" if any(m.niveau == FOUT for m in a.meldingen)
                        else "Waarschuwing" if a.meldingen else "In orde"),
         } for a in analyses]), hide_index=True, width="stretch",
-            column_config={"Laatste koers": st.column_config.NumberColumn(format="%.2f"),
+            column_config={"Laatste koers": st.column_config.NumberColumn(format="localized"),
                            "Koersdatum": st.column_config.DateColumn(format="DD-MM-YYYY")})
 
         problemen = [(a, m) for a in analyses for m in a.meldingen]
@@ -204,6 +226,41 @@ def tab_instrumenten(analyses: list[InstrumentAnalyse]) -> None:
             wis_rangschikking()
             st.rerun()
 
+    with st.expander("Kengetallen ophalen (EODHD)"):
+        st.caption("Haalt koers/winst, dividendrendement, schuld/eigen vermogen, TER, aantal posities en de "
+                   "grootste positie op bij EODHD (vereist EODHD_API_KEY). Alleen lege velden worden aangevuld; "
+                   "handmatig ingevulde waarden blijven staan, tenzij je overschrijven aanvinkt.")
+        kandidaten = {f"{a.instrument.naam} ({a.instrument.isin})": a.instrument
+                      for a in analyses if not a.instrument.type.is_obligatie}
+        gekozen = st.multiselect("Aandelen en ETF's", list(kandidaten), default=list(kandidaten))
+        overschrijven = st.checkbox("Bestaande waarden overschrijven")
+        if st.button("Kengetallen ophalen", disabled=not gekozen):
+            with st.spinner("Kengetallen ophalen…"):
+                uit = [f"{kandidaten[k].naam}: {dienst.vul_kengetallen_aan(kandidaten[k], opslag, overschrijven=overschrijven)}"
+                       for k in gekozen]
+            wis_rangschikking()
+            mislukt = [u for u in uit if ": mislukt" in u]
+            st.session_state["melding"] = (f"{len(uit) - len(mislukt)} van {len(uit)} instrument(en) verwerkt.",
+                                           mislukt)
+            st.session_state["kengetallen_resultaat"] = uit
+            st.rerun()
+        for regel in st.session_state.get("kengetallen_resultaat", []):
+            st.caption(regel)
+
+    with st.expander("Wisselkoersen importeren (CSV)"):
+        st.caption("Alternatief voor de ECB. Kolommen: datum, valuta, koers (aantal eenheden valuta per euro, "
+                   "bijv. USD 1,09). Zie voorbeelden/wisselkoersen.csv.")
+        bestand = st.file_uploader("CSV met wisselkoersen", type="csv", key="csv_fx")
+        if bestand and st.button("Importeren", key="knop_fx"):
+            try:
+                df = lees_wisselkoersen_csv(bestand)
+                n = sum(opslag.bewaar_wisselkoersen(v, g, "csv") for v, g in df.groupby("valuta"))
+                st.session_state["melding"] = (f"{n} wisselkoers(en) opgeslagen.", [])
+            except (BronFout, ValueError) as e:
+                st.session_state["melding"] = ("Niets geïmporteerd.", [str(e)])
+            wis_rangschikking()
+            st.rerun()
+
     with st.expander("Instrument verwijderen"):
         opties = {f"{a.instrument.naam} ({a.instrument.isin})": a.instrument.isin for a in analyses}
         keuze = st.selectbox("Instrument", list(opties) or ["–"], key="verwijder_keuze")
@@ -213,7 +270,8 @@ def tab_instrumenten(analyses: list[InstrumentAnalyse]) -> None:
             st.rerun()
 
     with st.expander("Demodata laden"):
-        st.caption("Voegt 11 fictieve instrumenten met verzonnen koersen toe (ISIN's beginnen met XX). "
+        st.caption("Voegt 12 fictieve instrumenten met verzonnen koersen en een fictieve dollarkoers toe "
+                   "(ISIN's beginnen met XX). "
                    "Alleen bedoeld om het dashboard te verkennen.")
         if st.button("Demodata laden"):
             n = demo.laad_demo(opslag)
@@ -295,6 +353,12 @@ def tab_analyse(analyses: list[InstrumentAnalyse], rf: float) -> None:
         st.warning(f"Signaal: {s}")
 
     st.subheader("Rendement en risico")
+    if i.valuta != "EUR" and not i.type.is_obligatie:
+        if a.rekenvaluta == "EUR":
+            st.caption(f"Koersen in {i.valuta} zijn omgerekend naar euro met ECB-wisselkoersen; "
+                       "valutarisico zit in rendement, risico en scenario's.")
+        else:
+            st.caption(f"Berekend in {i.valuta}: valutarisico is niet meegerekend.")
     k = st.columns(4)
     for kolom, jaren in zip(k, _config()["algemeen"]["horizons"]):
         kolom.metric(f"CAGR {jaren} jaar", nl(a.cagr.get(jaren), 1, "%"))
@@ -341,16 +405,19 @@ def tab_analyse(analyses: list[InstrumentAnalyse], rf: float) -> None:
     st.subheader("Liquiditeit en actualiteit")
     venster = _config()["filters"]["liquiditeit_venster_dagen"]
     k = st.columns(4)
-    k[0].metric("Laatste koers", nl(a.laatste_koers, 2, f" {'%' if i.type.is_obligatie else i.valuta}"))
+    k[0].metric("Laatste koers", nl(a.laatste_koers, 2, f" {'%' if i.type.is_obligatie else a.rekenvaluta}"))
     k[1].metric("Koersdatum", datum_nl(a.laatste_datum))
     k[2].metric("Leeftijd laatste koers", nl(a.leeftijd_dagen, 0, " dagen"))
     k[3].metric(f"Koersen laatste {venster} dagen", nl(a.koersen_recent, 0))
     st.caption(f"Bron van de laatste koers: {a.koersbron or 'onbekend'}.")
 
     historie = _opslag().historie(i.isin)
+    if a.rekenvaluta != i.valuta:
+        from analyse.valuta import naar_euro
+        historie, _ = naar_euro(historie, _opslag().wisselkoersen(i.valuta))
     if len(historie) >= 2:
         st.subheader("Koersverloop")
-        eenheid = "% van nominaal" if i.type.is_obligatie else i.valuta
+        eenheid = "% van nominaal" if i.type.is_obligatie else a.rekenvaluta
         fig = go.Figure(go.Scatter(
             x=historie["datum"], y=historie["koers"], mode="lines", name=i.naam,
             line=dict(color=serie_kleur(), width=2),
@@ -444,11 +511,11 @@ def tab_rangschikking(rf: float) -> None:
 
         st.dataframe(pd.DataFrame([_tabelrij(x) for x in zichtbaar]), hide_index=True, width="stretch",
                      column_config={
-                         "Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
-                         "Verwacht rendement (% p.j.)": st.column_config.NumberColumn(format="%.1f"),
-                         "Slecht scenario (%)": st.column_config.NumberColumn(format="%.1f"),
-                         "Volatiliteit (%)": st.column_config.NumberColumn(format="%.1f"),
-                         "Kosten (%)": st.column_config.NumberColumn(format="%.2f"),
+                         "Score": st.column_config.ProgressColumn(format="localized", min_value=0, max_value=100),
+                         "Verwacht rendement (% p.j.)": st.column_config.NumberColumn(format="localized"),
+                         "Slecht scenario (%)": st.column_config.NumberColumn(format="localized"),
+                         "Volatiliteit (%)": st.column_config.NumberColumn(format="localized"),
+                         "Kosten (%)": st.column_config.NumberColumn(format="localized"),
                      })
         st.caption("Klik op een kolomkop om te sorteren. 'Slecht scenario' is de totale waardeverandering "
                    "over de horizon in het slechte scenario.")
@@ -473,12 +540,14 @@ def tab_rangschikking(rf: float) -> None:
 
 def _tabelrij(x: Regel) -> dict:
     i, k = x.analyse.instrument, x.kenmerken
+    rond = lambda v, n: None if v is None else round(v, n)
     return {
-        "Rang": x.rang, "Naam": i.naam, "ISIN": i.isin, "Categorie": i.type.label, "Score": x.score,
-        "Verwacht rendement (% p.j.)": k["verwacht_rendement"],
-        "Slecht scenario (%)": k["verlies_slecht"],
-        "Volatiliteit (%)": k["volatiliteit"],
-        "Kosten (%)": k["kosten"],
+        "Rang": x.rang, "Naam": i.naam, "ISIN": i.isin, "Categorie": i.type.label, "Score": round(x.score, 1),
+        "Verwacht rendement (% p.j.)": rond(k["verwacht_rendement"], 1),
+        "Slecht scenario (%)": rond(k["verlies_slecht"], 1),
+        "Volatiliteit (%)": rond(k["volatiliteit"], 1),
+        "Kosten (%)": rond(k["kosten"], 2),
+        "Valuta": x.analyse.rekenvaluta,
         "Rating": i.rating if i.type.is_obligatie else None,
         "Recente koersen": int(k["liquiditeit"]),
         "Leeftijd koers (dagen)": int(k["actualiteit"]) if k["actualiteit"] is not None else None,

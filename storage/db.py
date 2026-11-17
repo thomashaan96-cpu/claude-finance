@@ -29,6 +29,13 @@ CREATE TABLE IF NOT EXISTS rentes (
     bron TEXT NOT NULL,
     opgehaald TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS wisselkoersen (
+    valuta TEXT NOT NULL,
+    datum TEXT NOT NULL,
+    koers REAL NOT NULL,          -- eenheden valuta per euro
+    bron TEXT NOT NULL,
+    PRIMARY KEY (valuta, datum)
+);
 CREATE TABLE IF NOT EXISTS verversingen (
     sleutel TEXT PRIMARY KEY,
     tijdstip TEXT NOT NULL,
@@ -123,6 +130,35 @@ class Opslag:
             "SELECT rente, bron, opgehaald FROM rentes ORDER BY ABS(looptijd - ?) LIMIT 1", (float(looptijd),)
         ).fetchone()
         return (r[0], r[1], r[2]) if r else None
+
+    # --- wisselkoersen -----------------------------------------------
+    def bewaar_wisselkoersen(self, valuta: str, df: pd.DataFrame, bron: str) -> int:
+        """Slaat wisselkoersen op (datum, koers = eenheden valuta per euro)."""
+        if df is None or df.empty:
+            return 0
+        rijen = [
+            (valuta.upper(), pd.Timestamp(d).date().isoformat(), float(k), bron)
+            for d, k in zip(df["datum"], df["koers"])
+            if pd.notna(k) and float(k) > 0
+        ]
+        with self._tx() as c:
+            c.executemany(
+                "INSERT INTO wisselkoersen (valuta, datum, koers, bron) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(valuta, datum) DO UPDATE SET koers = excluded.koers, bron = excluded.bron",
+                rijen,
+            )
+        return len(rijen)
+
+    def wisselkoersen(self, valuta: str) -> pd.DataFrame:
+        df = pd.read_sql_query(
+            "SELECT datum, koers, bron FROM wisselkoersen WHERE valuta = ? ORDER BY datum", self._conn,
+            params=(valuta.upper(),),
+        )
+        df["datum"] = pd.to_datetime(df["datum"]).dt.date
+        return df
+
+    def valuta_met_wisselkoersen(self) -> list[str]:
+        return [r[0] for r in self._conn.execute("SELECT DISTINCT valuta FROM wisselkoersen ORDER BY valuta")]
 
     # --- verversingen -------------------------------------------------
     def noteer_verversing(self, sleutel: str, status: str, tijdstip: Optional[datetime] = None) -> None:

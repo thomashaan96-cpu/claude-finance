@@ -304,8 +304,10 @@ def lees_koersen_csv(bron, isin: Optional[str] = None) -> pd.DataFrame:
     return df[["isin", "datum", "koers"]].reset_index(drop=True)
 
 
-def maak_bron(naam: str, symbolen: Optional[dict[str, str]] = None) -> PrijsBron:
+def maak_bron(naam: str, symbolen: Optional[dict[str, str]] = None, config: Optional[dict] = None) -> PrijsBron:
     """Fabriek voor API-bronnen op naam."""
+    if naam == "eulerpool":
+        return EulerpoolBron((config or {}).get("eulerpool"))
     if naam == "eodhd":
         return EODHDBron(symbolen=symbolen)
     if naam == "eodhd_eubond":
@@ -315,3 +317,157 @@ def maak_bron(naam: str, symbolen: Optional[dict[str, str]] = None) -> PrijsBron
     if naam == "ecb":
         return ECBBron()
     raise BronFout(f"Bron '{naam}' wordt niet automatisch ververst (gebruik CSV-import).")
+
+
+# --------------------------------------------------------------------------- Eulerpool
+class EulerpoolBron(PrijsBron):
+    """Eulerpool: koershistorie van (bedrijfs)obligaties op ISIN.
+
+    Adressen staan in config.yaml (sectie eulerpool), omdat ze per abonnement kunnen verschillen.
+    Het antwoord wordt flexibel gelezen: een lijst (of een lijst onder 'data'/'prices'/'values')
+    met een datumveld (date/datum/timestamp) en een koersveld (close/price/value/koers).
+    """
+
+    naam = "eulerpool"
+    DATUMVELDEN = ("date", "datum", "timestamp", "time", "datetime")
+    KOERSVELDEN = ("close", "price", "value", "koers", "last", "mid")
+
+    def __init__(self, instellingen: Optional[dict] = None, sleutel: Optional[str] = None, sessie=None):
+        i = instellingen or {}
+        self.basis_url = i.get("basis_url", "https://api.eulerpool.com").rstrip("/")
+        self.historie_pad = i.get("historie_pad", "/api/1/bonds/{isin}/prices?from={start}&to={eind}")
+        self.sleutel_parameter = i.get("sleutel_parameter", "token")
+        self.api_sleutel = sleutel or os.environ.get("EULERPOOL_API_KEY")
+        self.sessie = sessie
+
+    def historie(self, isin, start, eind):
+        if not self.api_sleutel:
+            raise BronFout("Geen API-sleutel: stel EULERPOOL_API_KEY in.")
+        url = self.basis_url + self.historie_pad.format(isin=isin, start=start.isoformat(), eind=eind.isoformat())
+        r = _get(url, {self.sleutel_parameter: self.api_sleutel}, self.sessie)
+        return self.lees_json(r.json())
+
+    @classmethod
+    def lees_json(cls, data) -> pd.DataFrame:
+        if isinstance(data, dict):
+            for sleutel in ("data", "prices", "values", "items", "results"):
+                if isinstance(data.get(sleutel), list):
+                    data = data[sleutel]
+                    break
+            else:
+                raise BronFout("Onverwacht antwoord van Eulerpool (geen lijst met koersen).")
+        if not data:
+            return pd.DataFrame(columns=KOLOMMEN)
+        df = pd.DataFrame(data)
+        datum = next((k for k in cls.DATUMVELDEN if k in df.columns), None)
+        koers = next((k for k in cls.KOERSVELDEN if k in df.columns), None)
+        if datum is None or koers is None:
+            raise BronFout(f"Eulerpool-antwoord mist datum- of koersveld (velden: {', '.join(map(str, df.columns))}).")
+        if pd.api.types.is_numeric_dtype(df[datum]):  # unix-tijd in seconden of milliseconden
+            eenheid = "ms" if df[datum].max() > 1e11 else "s"
+            df[datum] = pd.to_datetime(df[datum], unit=eenheid)
+        return _schoon(df.rename(columns={datum: "datum", koers: "koers"}))
+
+    def koers(self, isin):
+        return self._laatste(isin)
+
+    def rente(self, looptijd):
+        raise NietOndersteund("Gebruik de ECB-bron voor rentes.")
+
+
+# --------------------------------------------------------------------------- wisselkoersen
+class ECBWisselkoersBron:
+    """ECB-referentiekoersen (dataset EXR): aantal eenheden vreemde valuta per euro. Gratis."""
+
+    naam = "ecb"
+    URL = "https://data-api.ecb.europa.eu/service/data/EXR/D.{valuta}.EUR.SP00.A"
+
+    def __init__(self, sessie=None):
+        self.sessie = sessie
+
+    def wisselkoersen(self, valuta: str, start: date, eind: date) -> pd.DataFrame:
+        r = _get(self.URL.format(valuta=valuta.upper()),
+                 {"startPeriod": start.isoformat(), "endPeriod": eind.isoformat(), "format": "csvdata"}, self.sessie)
+        return self.lees_csv(r.text)
+
+    @staticmethod
+    def lees_csv(tekst: str) -> pd.DataFrame:
+        df = pd.read_csv(io.StringIO(tekst))
+        if df.empty or not {"TIME_PERIOD", "OBS_VALUE"} <= set(df.columns):
+            raise BronFout("Onverwacht antwoord van de ECB (wisselkoersen).")
+        return _schoon(df.rename(columns={"TIME_PERIOD": "datum", "OBS_VALUE": "koers"}))
+
+
+def lees_wisselkoersen_csv(bron) -> pd.DataFrame:
+    """Wisselkoersen uit CSV. Kolommen: datum, valuta, koers (eenheden valuta per euro)."""
+    df = bron.copy() if isinstance(bron, pd.DataFrame) else lees_csv(bron)
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    ontbreekt = {"datum", "valuta", "koers"} - set(df.columns)
+    if ontbreekt:
+        raise BronFout(f"Kolom(men) ontbreken in het wisselkoersbestand: {', '.join(sorted(ontbreekt))}")
+    df["valuta"] = df["valuta"].astype(str).str.strip().str.upper()
+    df["koers"] = pd.to_numeric(df["koers"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+    df["datum"] = pd.to_datetime(df["datum"], errors="coerce").dt.date
+    df = df.dropna(subset=["datum", "koers"])
+    df = df[df["koers"] > 0]
+    return df[["valuta", "datum", "koers"]].sort_values(["valuta", "datum"]).reset_index(drop=True)
+
+
+# --------------------------------------------------------------------------- kengetallen
+def _getal(waarde) -> Optional[float]:
+    try:
+        x = float(waarde)
+    except (TypeError, ValueError):
+        return None
+    return x if x == x else None  # NaN eruit
+
+
+def lees_fundamentals(data: dict) -> dict:
+    """Haalt kengetallen uit een EODHD-fundamentals-antwoord.
+
+    Geeft alleen velden terug die gevonden zijn, in de eenheden van het datamodel (percentages in %).
+    """
+    uit: dict = {}
+    if not isinstance(data, dict):
+        return uit
+    h = data.get("Highlights") or {}
+    if (pe := _getal(h.get("PERatio"))) and pe > 0:
+        uit["koers_winst"] = round(pe, 2)
+    if (dy := _getal(h.get("DividendYield"))) is not None:
+        uit["dividendrendement"] = round(dy * 100, 2)
+
+    # Schuld/eigen vermogen uit de meest recente kwartaalbalans
+    balans = ((data.get("Financials") or {}).get("Balance_Sheet") or {}).get("quarterly") or {}
+    for _, b in sorted(balans.items(), reverse=True):
+        schuld = _getal(b.get("shortLongTermDebtTotal"))
+        if schuld is None:
+            delen = [_getal(b.get(k)) for k in ("shortTermDebt", "longTermDebt")]
+            schuld = sum(d for d in delen if d is not None) if any(d is not None for d in delen) else None
+        ev = _getal(b.get("totalStockholderEquity"))
+        if schuld is not None and ev and ev > 0:
+            uit["schuld_eigen_vermogen"] = round(schuld / ev, 2)
+            break
+
+    etf = data.get("ETF_Data") or {}
+    if etf:
+        if (ter := _getal(etf.get("NetExpenseRatio"))) is not None:
+            uit["ter"] = round(ter * 100, 3)
+        if (n := _getal(etf.get("Holdings_Count"))) and n > 0:
+            uit["aantal_posities"] = int(n)
+        top = etf.get("Top_10_Holdings") or etf.get("Holdings") or {}
+        gewichten = [_getal(x.get("Assets_%")) for x in top.values() if isinstance(x, dict)]
+        gewichten = [g for g in gewichten if g is not None]
+        if gewichten:
+            uit["concentratie"] = round(max(gewichten), 2)
+        if "dividendrendement" not in uit and (y := _getal(etf.get("Yield"))) is not None:
+            uit["dividendrendement"] = round(y, 2)
+    return uit
+
+
+def haal_kengetallen_eodhd(isin: str, symbool: Optional[str] = None, sleutel: Optional[str] = None,
+                           sessie=None) -> dict:
+    """Haalt kengetallen op bij EODHD (endpoint fundamentals)."""
+    bron = EODHDBron(sleutel=sleutel, symbolen={isin: symbool} if symbool else None, sessie=sessie)
+    r = _get(f"{EODHDBron.BASIS}/fundamentals/{bron.symbool(isin)}", {"api_token": bron._sleutel(), "fmt": "json"},
+             sessie)
+    return lees_fundamentals(r.json())

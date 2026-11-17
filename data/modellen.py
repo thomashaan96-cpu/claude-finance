@@ -38,7 +38,7 @@ class InstrumentType(str, Enum):
         }[self.value]
 
 
-BRONNEN = ["csv", "handmatig", "eodhd", "twelvedata", "eodhd_eubond"]
+BRONNEN = ["csv", "handmatig", "eodhd", "twelvedata", "eodhd_eubond", "eulerpool"]
 
 
 def isin_geldig(isin: str) -> bool:

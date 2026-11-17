@@ -12,7 +12,7 @@ from data.bronnen import BronFout, ECBBron, PrijsBron, maak_bron
 from data.modellen import Instrument
 from storage.db import Opslag
 
-API_BRONNEN = {"eodhd", "twelvedata", "eodhd_eubond"}
+API_BRONNEN = {"eodhd", "twelvedata", "eodhd_eubond", "eulerpool"}
 RENTE_SLEUTEL = "rente:ecb"
 
 
@@ -25,7 +25,7 @@ def ververs_instrument(instrument: Instrument, opslag: Opslag, config: dict,
     start = vandaag - timedelta(days=int(config["algemeen"]["historie_jaren"] * 365.25))
     try:
         symbolen = {instrument.isin: instrument.symbool} if instrument.symbool else None
-        bron = bron or maak_bron(instrument.bron, symbolen)
+        bron = bron or maak_bron(instrument.bron, symbolen, config)
         df = bron.historie(instrument.isin, start, vandaag)
         n = opslag.bewaar_koersen(instrument.isin, df, bron.naam)
         status = f"ok: {n} koersen" if n else "geen koersen ontvangen"
@@ -62,3 +62,49 @@ def ververs_rentes(opslag: Opslag, bron: Optional[PrijsBron] = None,
         status = f"mislukt: {e}"
     opslag.noteer_verversing(RENTE_SLEUTEL, status)
     return status
+
+
+def benodigde_valuta(opslag: Opslag) -> list[str]:
+    """Vreemde valuta van aandelen en ETF's in de instrumentenlijst."""
+    return sorted({i.valuta for i in opslag.instrumenten() if i.valuta != "EUR" and not i.type.is_obligatie})
+
+
+def ververs_wisselkoersen(opslag: Opslag, config: dict, bron=None, valuta: Optional[list[str]] = None,
+                          vandaag: Optional[date] = None) -> dict[str, str]:
+    """Haalt ECB-wisselkoersen op voor alle benodigde valuta."""
+    from data.bronnen import ECBWisselkoersBron
+
+    bron = bron or ECBWisselkoersBron()
+    vandaag = vandaag or date.today()
+    start = vandaag - timedelta(days=int(config["algemeen"]["historie_jaren"] * 365.25))
+    resultaat = {}
+    for v in valuta if valuta is not None else benodigde_valuta(opslag):
+        try:
+            n = opslag.bewaar_wisselkoersen(v, bron.wisselkoersen(v, start, vandaag), bron.naam)
+            resultaat[v] = f"ok: {n} koersen"
+        except BronFout as e:
+            resultaat[v] = f"mislukt: {e}"
+        opslag.noteer_verversing(f"valuta:{v}", resultaat[v])
+    return resultaat
+
+
+def vul_kengetallen_aan(instrument: Instrument, opslag: Opslag, ophalen=None, overschrijven: bool = False) -> str:
+    """Haalt kengetallen op (standaard EODHD fundamentals) en vult ontbrekende velden aan.
+
+    Handmatig ingevulde waarden blijven staan, tenzij `overschrijven` waar is.
+    """
+    from data.bronnen import haal_kengetallen_eodhd
+
+    if instrument.type.is_obligatie:
+        return "overgeslagen (obligatie)"
+    try:
+        gevonden = (ophalen or haal_kengetallen_eodhd)(instrument.isin, instrument.symbool)
+    except BronFout as e:
+        return f"mislukt: {e}"
+    if instrument.type.value == "aandeel":
+        gevonden = {k: v for k, v in gevonden.items() if k not in ("ter", "aantal_posities")}
+    nieuw = {k: v for k, v in gevonden.items() if overschrijven or getattr(instrument, k) is None}
+    if not nieuw:
+        return "geen nieuwe kengetallen"
+    opslag.bewaar_instrument(instrument.model_copy(update=nieuw))
+    return "aangevuld: " + ", ".join(sorted(nieuw))
